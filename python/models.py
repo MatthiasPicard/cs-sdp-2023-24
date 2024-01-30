@@ -1,6 +1,7 @@
 import pickle
 from abc import abstractmethod
-
+from gurobipy import *
+import math
 import numpy as np
 
 
@@ -170,13 +171,30 @@ class TwoClustersMIP(BaseModel):
         n°clusters: int
             Number of clusters to implement in the MIP.
         """
+        self.L = n_pieces
+        self.K = n_clusters
+        self.n = 4
         self.seed = 123
+        self.epsilon = 0.01
+        self.P = 2000
+        self.utilite = np.zeros((2,self.K,self.P,self.n))
         self.model = self.instantiate()
 
     def instantiate(self):
         """Instantiation of the MIP Variables - To be completed."""
-        # To be completed
-        return
+        self.bigM = 100
+        m = Model("Simple PL modelling")
+        self.criteria = [[[m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
+        self.sigma_plus_x = [m.addVar(name=f"sigmax+_{i}",vtype=GRB.CONTINUOUS) for i in range(self.P)]
+        self.sigma_plus_y = [m.addVar(name=f"sigmay+_{i}",vtype=GRB.CONTINUOUS) for i in range(self.P)]
+        self.sigma_moins_x = [m.addVar(name=f"sigmax-_{i}",vtype=GRB.CONTINUOUS) for i in range(self.P)]
+        self.sigma_moins_y = [m.addVar(name=f"sigmay-_{i}",vtype=GRB.CONTINUOUS) for i in range(self.P)]
+
+        self.binary = [[m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
+
+        m.update()
+        
+        return m
 
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
@@ -190,6 +208,47 @@ class TwoClustersMIP(BaseModel):
         """
 
         # To be completed
+        
+        mins = X.min(axis=0)
+        maxs = X.max(axis=0)
+        
+        def li(i, X):
+            x = X[i]
+            return math.floor(self.L * (x - mins[i]) / (maxs[i] - mins[i]))#-1
+
+        def xl(i, l):
+            return mins[i] + l * (maxs[i] - mins[i]) / self.L
+        
+        def u_i(i,X,k):
+            x = X[i]
+            l = li(i,X)
+            x_l = xl(i, l)
+            x_l1 = xl (i, l+1)
+            return (self.criteria[k][i][l] + (x-x_l)/(x_l1-x_l))*(self.criteria[k][i][l+1]-self.criteria[k][i][l])
+
+        for k in range(self.K):
+            for i in range(self.n):
+                u_iXk = u_i(i,X,k)
+                u_iYk = u_i(i,Y,k)
+                for j in range(self.P):
+                    self.utilite[0,k,j,i] = u_iXk[j] # X is equivalent to 0
+                    self.utilite[1,k,j,i] = u_iYk[j] # Y is equivalent to 1
+
+        uk_j = np.zeros((2,self.K,self.P))
+        for k in range(self.K):
+            for j in range(self.P):
+                uk_j[0,k, j] = np.sum(self.utilite[0,k,j])
+                uk_j[1,k, j] = np.sum(self.utilite[1,k,j])
+                    
+        self.model.addConstrs(uk_j[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - uk_j[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j] - self.epsilon >= -self.M*(1-self.binary[j][k]) for j in range(self.P) for k in range(self.K))
+
+        self.model.addConstrs(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=self.epsilon for k in range(self.K) for i in range(self.n) for l in range(self.L-1))
+        
+        self.model.addConstrs(self.criteria[k][i][0]==0 for k in range(self.K) for i in range(self.n))
+        
+        self.model.addConstrs(sum(self.criteria[k][i][self.L-1])==1 for k in range(self.K) for i in range(self.n))
+
+        self.model.setObjective(sum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
         return
 
     def predict_utility(self, X):
