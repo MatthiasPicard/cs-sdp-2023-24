@@ -175,7 +175,7 @@ class TwoClustersMIP(BaseModel):
         self.K = n_clusters
         self.n = 4
         self.seed = 123
-        self.epsilon = 0.001
+        self.epsilon = 0.00001
         self.P = 2000
         self.M = 5
         self.criterion_utilite = {}
@@ -185,20 +185,35 @@ class TwoClustersMIP(BaseModel):
     def instantiate(self):
         """Instantiation of the MIP Variables - To be completed."""
         self.bigM = 100
-        self.m = Model("Simple PL modelling")
-        self.criteria = [[[self.m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
-        self.sigma_plus_x = [self.m.addVar(name=f"sigmax+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
-        self.sigma_plus_y = [self.m.addVar(name=f"sigmay+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
-        self.sigma_moins_x = [self.m.addVar(name=f"sigmax-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
-        self.sigma_moins_y = [self.m.addVar(name=f"sigmay-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        m = Model("Simple PL modelling")
+        self.criteria = [[[m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
+        self.sigma_plus_x = [m.addVar(name=f"sigmax+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_plus_y = [m.addVar(name=f"sigmay+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_moins_x = [m.addVar(name=f"sigmax-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_moins_y = [m.addVar(name=f"sigmay-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
 
-        self.binary = [[self.m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
+        self.binary = [[m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
 
-        self.m.update()
+        m.update()
         
-        return self.m
+        return m
 
-        
+    def li(self,x):
+        # print(x,mins[i],maxs[i])
+        return int(self.L*x + 1)
+
+    def xl(self,l):
+        return l/self.L
+    
+    def u_i(self,i,x,k, evaluate = False):
+        get_val = (lambda x: x.X) if evaluate else (lambda x: x)
+        # print(j,i,X[j,i])   
+        l = self.li(x[i])
+        x_l = self.xl(l-1)
+        x_l1 = self.xl(l)
+        # print((self.criteria[k][i][l] + ((X[j, i]-x_l)/(x_l1-x_l))*(self.criteria[k][i][l+1]-self.criteria[k][i][l])))
+        return (get_val(self.criteria[k][i][l-1]) + ((x[i]-x_l)/(x_l1-x_l))*(get_val(self.criteria[k][i][l])-get_val(self.criteria[k][i][l-1])))
+    
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
 
@@ -209,33 +224,15 @@ class TwoClustersMIP(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-        mins = np.concatenate((X,Y),axis=0).min(axis=0)
-        maxs = np.concatenate((X,Y),axis=0).max(axis=0)
-        
-        def li(i, x):
-            # print(x,mins[i],maxs[i])
-            return np.floor(self.L * (x - mins[i]) / (maxs[i] - mins[i]))
-
-        def xl(i, l):
-            return mins[i] + l * (maxs[i] - mins[i]) / self.L
-        
-        def u_i(j,i,X,k):
-            if X[j,i] == maxs[i]:
-                return self.criteria[k][i][-1] 
-            # print(j,i,X[j,i])   
-            l = int(li(i,X[j,i]))
-
-            x_l = xl(i, l)
-            x_l1 = xl(i, l+1)
-            # print(k,i,l)
-            return (self.criteria[k][i][l] + (X[j, i]-x_l)/(x_l1-x_l))*(self.criteria[k][i][l+1]-self.criteria[k][i][l])
-
-
+          
         for k in range(self.K):
             for j in range(self.P):
-                self.sum_utilite[(0,k,j)] = quicksum([u_i(j,i,X,k) for i in range(self.n)]) # X is equivalent to 0
-                self.sum_utilite[(1,k,j)] = quicksum([u_i(j,i,Y,k) for i in range(self.n)]) # Y is equivalent to 1
-
+                x = X[j]
+                y = Y[j]
+                self.sum_utilite[(0,k,j)] = quicksum([self.u_i(i,x,k) for i in range(self.n)]) # X is equivalent to 0
+                self.sum_utilite[(1,k,j)] = quicksum([self.u_i(i,y,k) for i in range(self.n)]) # Y is equivalent to 1
+                # print(self.sum_utilite[(1,k,j)])
+                # print(self.sum_utilite[(0,k,j)])
                 # for i in range(self.n):
                 #     print(u_i(j,i,X,k))
                 #     self.criterion_utilite[(0,k,j,i)] = u_i(j,i,X,k) # X is equivalent to 0
@@ -249,28 +246,35 @@ class TwoClustersMIP(BaseModel):
          
         for j in range(self.P):
             for k in range(self.K):         
-                self.m.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>= -self.M*(1-self.binary[j][k]))
-                self.m.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
+                self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>= -self.M*(1-self.binary[j][k])+self.epsilon)
+                # self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
 
         for k in range(self.K):
             for i in range(self.n):
-                for l in range(self.L): # self.L-1?
-                    self.m.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=self.epsilon)
+                for l in range(self.L): # self.L-1? L?
+                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=self.epsilon)
         
         for k in range(self.K):
             for i in range(self.n):
-                self.m.addConstr(self.criteria[k][i][0] == 0)
+                self.model.addConstr(self.criteria[k][i][0] == 0)
 
         for k in range(self.K):
-            self.m.addConstr(quicksum([self.criteria[k][i][self.L-1] for i in range(self.n)]) == 1)
+            self.model.addConstr(quicksum([self.criteria[k][i][self.L] for i in range(self.n)]) == 1)
         
         for j in range(self.P):
-            self.m.addConstr(quicksum([self.binary[j][k] for k in range(self.K)]) >= 1)
+            self.model.addConstr(quicksum(self.binary[j]) >= 1)
         
-        self.m.setObjective(quicksum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
+        self.model.setObjective(quicksum(self.sigma_plus_x) + quicksum(self.sigma_moins_x) + quicksum(self.sigma_plus_y) + quicksum(self.sigma_moins_y), GRB.MINIMIZE)
+        # self.model.setObjective(quicksum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
 
-        self.model.update()
         self.model.optimize()
+        
+        if self.model.status == GRB.INFEASIBLE:
+            print("Pas de solution")
+        elif self.model.status == GRB.UNBOUNDED:
+            print("Non borné")
+        else:
+            print("Solution!")
         
         return self
 
@@ -282,18 +286,14 @@ class TwoClustersMIP(BaseModel):
         X: np.ndarray
             (n_samples, n_features) list of features of elements
         """
-        
-        n_samples = X.shape[0]
-        decision_function = np.zeros((n_samples, self.K))
-    
-        for k in range(self.K):
-            for i in range(self.n):
-                for j in range(self.P):
-                    print(self.sum_utilite[0,k,j])
-                    print(self.criteria[k][i][0])
-                    #decision_function[:, k] += u_iXk * self.criteria[k][i][li(i, X)]
+        P = []
+        for x in X:
+            K = []
+            for k in range(self.K):
+                K.append(sum([self.u_i(i,x,k, evaluate = True) for i in range(self.n)]))
+            P.append(K)
+        return np.array(P)
 
-        return decision_function
 
 
 class HeuristicModel(BaseModel):
