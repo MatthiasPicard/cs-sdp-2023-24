@@ -1,7 +1,8 @@
 import pickle
 from abc import abstractmethod
 from gurobipy import *
-import math
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 import numpy as np
 
 
@@ -184,7 +185,7 @@ class TwoClustersMIP(BaseModel):
 
     def instantiate(self):
         """Instantiation of the MIP Variables - To be completed."""
-        self.bigM = 100
+        # self.bigM = 100
         m = Model("Simple PL modelling")
         self.criteria = [[[m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
         self.sigma_plus_x = [m.addVar(name=f"sigmax+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
@@ -252,7 +253,7 @@ class TwoClustersMIP(BaseModel):
         for k in range(self.K):
             for i in range(self.n):
                 for l in range(self.L): # self.L-1? L?
-                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=self.epsilon)
+                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=0)#self.epsilon)
         
         for k in range(self.K):
             for i in range(self.n):
@@ -304,14 +305,55 @@ class HeuristicModel(BaseModel):
     def __init__(self):
         """Initialization of the Heuristic Model.
         """
+        self.L = 5
+        self.K = 3
+        self.n = 10
         self.seed = 123
-        self.models = self.instantiate()
+        self.epsilon = 0.001
+        self.P = 40002
+        self.criterion_utilite = {}
+        self.sum_utilite = {}
+        self.model = self.instantiate()
 
+    def prior_cluster(self,X,Y):
+        data =X-Y
+        kmeans = KMeans(n_clusters=self.K, random_state=42)
+        return  kmeans.fit_predict(data)
+        
     def instantiate(self):
-        """Instantiation of the MIP Variables"""
-        # To be completed
-        return
+        """Instantiation of the MIP Variables - To be completed."""
+        m = Model("Complex PL modelling")
+        self.criteria = [[[m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
+        self.sigma_plus_x = [m.addVar(name=f"sigmax+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_plus_y = [m.addVar(name=f"sigmay+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_moins_x = [m.addVar(name=f"sigmax-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
+        self.sigma_moins_y = [m.addVar(name=f"sigmay-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
 
+        # self.binary = [[m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
+
+        m.update()
+        
+        return m
+
+    def li(self,x):
+        # print(x,mins[i],maxs[i])
+        return int(self.L*x + 1)
+
+    def xl(self,l):
+        return l/self.L
+    
+    def u_i(self,i,x,k, evaluate = False):
+        get_val = (lambda x: x.X) if evaluate else (lambda x: x)
+        # print(i,k) 
+        if x[i] == 1:
+            return get_val(self.criteria[k][i][-1]) 
+        l = self.li(x[i])
+        x_l = self.xl(l-1)
+        x_l1 = self.xl(l)
+        # print(x[i])
+        # print(get_val(self.criteria[k][i][l]))
+        return (get_val(self.criteria[k][i][l-1]) + ((x[i]-x_l)/(x_l1-x_l))*(get_val(self.criteria[k][i][l])-get_val(self.criteria[k][i][l-1])))
+    
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
 
@@ -322,8 +364,43 @@ class HeuristicModel(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-        # To be completed
-        return
+        clusters = self.prior_cluster(X,Y)
+        for c,j in zip(clusters,range(self.P)):
+            x = X[j]
+            y = Y[j]
+            self.sum_utilite[(0,c,j)] = quicksum([self.u_i(i,x,c) for i in range(self.n)]) # X is equivalent to 0
+            self.sum_utilite[(1,c,j)] = quicksum([self.u_i(i,y,c) for i in range(self.n)]) # Y is equivalent to 1
+         
+        for c,j in zip(clusters,range(self.P)):       
+            self.model.addConstr(self.sum_utilite[0,c,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,c, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>=self.epsilon)
+            # self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
+
+        for k in range(self.K):
+            for i in range(self.n):
+                for l in range(self.L): # self.L-1? L?
+                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=0)#self.epsilon)
+        
+        for k in range(self.K):
+            for i in range(self.n):
+                self.model.addConstr(self.criteria[k][i][0] == 0)
+
+        for k in range(self.K):
+            self.model.addConstr(quicksum([self.criteria[k][i][self.L] for i in range(self.n)]) == 1)
+        
+        
+        self.model.setObjective(quicksum(self.sigma_plus_x) + quicksum(self.sigma_moins_x) + quicksum(self.sigma_plus_y) + quicksum(self.sigma_moins_y), GRB.MINIMIZE)
+        # self.model.setObjective(quicksum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
+
+        self.model.optimize()
+        
+        if self.model.status == GRB.INFEASIBLE:
+            print("Pas de solution")
+        elif self.model.status == GRB.UNBOUNDED:
+            print("Non borné")
+        else:
+            print("Solution!")
+        
+        return self
 
     def predict_utility(self, X):
         """Return Decision Function of the MIP for X. - To be completed.
@@ -333,6 +410,10 @@ class HeuristicModel(BaseModel):
         X: np.ndarray
             (n_samples, n_features) list of features of elements
         """
-        # To be completed
-        # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        return
+        P = []
+        for x in X:
+            K = []
+            for k in range(self.K):
+                K.append(sum([self.u_i(i,x,k, evaluate = True) for i in range(self.n)]))
+            P.append(K)
+        return np.array(P)
