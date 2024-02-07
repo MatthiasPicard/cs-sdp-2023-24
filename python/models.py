@@ -38,6 +38,11 @@ class BaseModel(object):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
+
+        Returns
+        -------
+        np.ndarray:
+            (n_samples, n_clusters) array of decision function value for each cluster.
         """
         # Customize what happens in the predict utility function
         return
@@ -136,10 +141,9 @@ class RandomExampleModel(BaseModel):
             (n_samples, n_features) features of unchosen elements
         """
         np.random.seed(self.seed)
-        indexes = np.random.randint(0, 2, (len(X)))
         num_features = X.shape[1]
-        weights_1 = np.random.rand(num_features)
-        weights_2 = np.random.rand(num_features)
+        weights_1 = np.random.rand(num_features) # Weights cluster 1
+        weights_2 = np.random.rand(num_features) # Weights cluster 2
 
         weights_1 = weights_1 / np.sum(weights_1)
         weights_2 = weights_2 / np.sum(weights_2)
@@ -153,8 +157,15 @@ class RandomExampleModel(BaseModel):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
+
+        Returns
+        -------
+        np.ndarray:
+            (n_samples, n_clusters) array of decision function value for each cluster.
         """
-        return np.stack([np.dot(X, self.weights[0]), np.dot(X, self.weights[1])], axis=1)
+        u_1 = np.dot(X, self.weights[0]) # Utility for cluster 1 = X^T.w_1
+        u_2 = np.dot(X, self.weights[1]) # Utility for cluster 2 = X^T.w_2
+        return np.stack([u_1, u_2], axis=1) # Stacking utilities over cluster on axis 1
 
 
 class TwoClustersMIP(BaseModel):
@@ -169,7 +180,7 @@ class TwoClustersMIP(BaseModel):
         ----------
         n_pieces: int
             Number of pieces for the utility function of each feature.
-        n°clusters: int
+        n_clusters: int
             Number of clusters to implement in the MIP.
         """
         self.L = n_pieces
@@ -286,6 +297,11 @@ class TwoClustersMIP(BaseModel):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
+        
+        Returns
+        -------
+        np.ndarray:
+            (n_samples, n_clusters) array of decision function value for each cluster.
         """
         P = []
         for x in X:
@@ -409,6 +425,11 @@ class HeuristicModel(BaseModel):
         -----------
         X: np.ndarray
             (n_samples, n_features) list of features of elements
+        
+        Returns
+        -------
+        np.ndarray:
+            (n_samples, n_clusters) array of decision function value for each cluster.
         """
         P = []
         for x in X:
