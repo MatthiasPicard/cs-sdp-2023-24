@@ -136,3 +136,4 @@ dmypy.json
 # Secret files
 secrets/*
 !secrets/.gitkeep
+groupe18
