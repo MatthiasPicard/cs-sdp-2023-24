@@ -196,22 +196,26 @@ class TwoClustersMIP(BaseModel):
 
     def instantiate(self):
         """Instantiation of the MIP Variables - To be completed."""
-        # self.bigM = 100
         m = Model("Simple PL modelling")
+        
+        # We instanciate utility variables and sigmas according to the UTA model
+        # NOTE, for a specified j, sigma is the same for every clusters, this reduce significantly the number of variables
+        # moreover,  we experimented that this does not reduce the performances of the model
         self.criteria = [[[m.addVar(name=f"u_{k}_{i}_{l}",vtype=GRB.CONTINUOUS, lb=0, ub=1) for l in range(self.L+1)] for i in range(self.n)] for k in range(self.K)]
         self.sigma_plus_x = [m.addVar(name=f"sigmax+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
         self.sigma_plus_y = [m.addVar(name=f"sigmay+_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
         self.sigma_moins_x = [m.addVar(name=f"sigmax-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
         self.sigma_moins_y = [m.addVar(name=f"sigmay-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
 
+        # Binary variables to determine whether x>y or not
         self.binary = [[m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
 
         m.update()
         
         return m
-
+    # These functions were created to create the utility function variables,
+    # we create a UTA model and considered that min(i) = 0 and max(i) = 1 for i in range(self.n), to simplify the computation
     def li(self,x):
-        # print(x,mins[i],maxs[i])
         return int(self.L*x + 1)
 
     def xl(self,l):
@@ -219,11 +223,11 @@ class TwoClustersMIP(BaseModel):
     
     def u_i(self,i,x,k, evaluate = False):
         get_val = (lambda x: x.X) if evaluate else (lambda x: x)
-        # print(j,i,X[j,i])   
+        if x[i] == 1:
+            return get_val(self.criteria[k][i][-1]) 
         l = self.li(x[i])
         x_l = self.xl(l-1)
         x_l1 = self.xl(l)
-        # print((self.criteria[k][i][l] + ((X[j, i]-x_l)/(x_l1-x_l))*(self.criteria[k][i][l+1]-self.criteria[k][i][l])))
         return (get_val(self.criteria[k][i][l-1]) + ((x[i]-x_l)/(x_l1-x_l))*(get_val(self.criteria[k][i][l])-get_val(self.criteria[k][i][l-1])))
     
     def fit(self, X, Y):
@@ -236,48 +240,45 @@ class TwoClustersMIP(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-          
+        # Compute the utility function for every (x,y) for every cluster 
         for k in range(self.K):
             for j in range(self.P):
                 x = X[j]
                 y = Y[j]
                 self.sum_utilite[(0,k,j)] = quicksum([self.u_i(i,x,k) for i in range(self.n)]) # X is equivalent to 0
                 self.sum_utilite[(1,k,j)] = quicksum([self.u_i(i,y,k) for i in range(self.n)]) # Y is equivalent to 1
-                # print(self.sum_utilite[(1,k,j)])
-                # print(self.sum_utilite[(0,k,j)])
-                # for i in range(self.n):
-                #     print(u_i(j,i,X,k))
-                #     self.criterion_utilite[(0,k,j,i)] = u_i(j,i,X,k) # X is equivalent to 0
-                #     self.criterion_utilite[(1,k,j,i)] = u_i(j,i,Y,k) # Y is equivalent to 1
 
-        
-        # for k in range(self.K):
-        #     for j in range(self.P):
-        #         self.sum_utilite[(0,k, j)] = quicksum(self.criterion_utilite[0,k,j])
-        #         self.sum_utilite[(1,k, j)] = quicksum(self.criterion_utilite[1,k,j])
+        # Constraints
          
+        # x>y <=> binary == 1
         for j in range(self.P):
             for k in range(self.K):         
                 self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>= -self.M*(1-self.binary[j][k])+self.epsilon)
-                # self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
+                self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
 
+        # Monotony of linear pieces
         for k in range(self.K):
             for i in range(self.n):
-                for l in range(self.L): # self.L-1? L?
+                for l in range(self.L):
                     self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=0)#self.epsilon)
         
+        # First linear pieces == 0
         for k in range(self.K):
             for i in range(self.n):
                 self.model.addConstr(self.criteria[k][i][0] == 0)
-
+                
+        # Normalization of the criteria
         for k in range(self.K):
             self.model.addConstr(quicksum([self.criteria[k][i][self.L] for i in range(self.n)]) == 1)
         
+        # At least one cluster should have x>y
         for j in range(self.P):
             self.model.addConstr(quicksum(self.binary[j]) >= 1)
         
+        
+        # Objective function
+        
         self.model.setObjective(quicksum(self.sigma_plus_x) + quicksum(self.sigma_moins_x) + quicksum(self.sigma_plus_y) + quicksum(self.sigma_moins_y), GRB.MINIMIZE)
-        # self.model.setObjective(quicksum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
 
         self.model.optimize()
         
@@ -325,12 +326,14 @@ class HeuristicModel(BaseModel):
         self.K = n_clusters
         self.n = 10
         self.seed = 123
-        self.epsilon = 0.001
+        self.epsilon = 0.00001
         self.P = 40002
         self.criterion_utilite = {}
         self.sum_utilite = {}
         self.model = self.instantiate()
 
+    # We want to determine what the cluster of client is first and then computing UTA for each cluster
+    # We cluster according to the difference between x and y and we apply a K-means
     def prior_cluster(self,X,Y):
         data =X-Y
         kmeans = KMeans(n_clusters=self.K, random_state=42)
@@ -345,14 +348,13 @@ class HeuristicModel(BaseModel):
         self.sigma_moins_x = [m.addVar(name=f"sigmax-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
         self.sigma_moins_y = [m.addVar(name=f"sigmay-_{j}",vtype=GRB.CONTINUOUS) for j in range(self.P)]
 
-        # self.binary = [[m.addVar(vtype=GRB.BINARY, name=f"binary_{k}_{j}") for k in range(self.K)] for j in range(self.P)]
-
+        # No more binary variables since we already determined the cluster of each (x,y)
+        
         m.update()
         
         return m
 
     def li(self,x):
-        # print(x,mins[i],maxs[i])
         return int(self.L*x + 1)
 
     def xl(self,l):
@@ -360,14 +362,11 @@ class HeuristicModel(BaseModel):
     
     def u_i(self,i,x,k, evaluate = False):
         get_val = (lambda x: x.X) if evaluate else (lambda x: x)
-        # print(i,k) 
         if x[i] == 1:
             return get_val(self.criteria[k][i][-1]) 
         l = self.li(x[i])
         x_l = self.xl(l-1)
         x_l1 = self.xl(l)
-        # print(x[i])
-        # print(get_val(self.criteria[k][i][l]))
         return (get_val(self.criteria[k][i][l-1]) + ((x[i]-x_l)/(x_l1-x_l))*(get_val(self.criteria[k][i][l])-get_val(self.criteria[k][i][l-1])))
     
     def fit(self, X, Y):
@@ -380,7 +379,7 @@ class HeuristicModel(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-        clusters = self.prior_cluster(X,Y)
+        clusters = self.prior_cluster(X,Y) # a priori clusterization
         for c,j in zip(clusters,range(self.P)):
             x = X[j]
             y = Y[j]
@@ -389,13 +388,12 @@ class HeuristicModel(BaseModel):
          
         for c,j in zip(clusters,range(self.P)):       
             self.model.addConstr(self.sum_utilite[0,c,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,c, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>=self.epsilon)
-            # self.model.addConstr(self.sum_utilite[0,k,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,k, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= self.M*self.binary[j][k] - self.epsilon )
+            # self.model.addConstr(self.sum_utilite[0,c,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,c, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= - self.epsilon ) # Infeasible with this constraint
 
         for k in range(self.K):
             for i in range(self.n):
-                for l in range(self.L): # self.L-1? L?
-                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=0)#self.epsilon)
-        
+                for l in range(self.L):
+                    self.model.addConstr(self.criteria[k][i][l+1] - self.criteria[k][i][l]>=0)
         for k in range(self.K):
             for i in range(self.n):
                 self.model.addConstr(self.criteria[k][i][0] == 0)
@@ -405,7 +403,6 @@ class HeuristicModel(BaseModel):
         
         
         self.model.setObjective(quicksum(self.sigma_plus_x) + quicksum(self.sigma_moins_x) + quicksum(self.sigma_plus_y) + quicksum(self.sigma_moins_y), GRB.MINIMIZE)
-        # self.model.setObjective(quicksum(self.sigma_plus_x[j] + self.sigma_moins_x[j] + self.sigma_plus_y[j] + self.sigma_moins_y[j] for j in range(self.P)), GRB.MINIMIZE)
 
         self.model.optimize()
         
