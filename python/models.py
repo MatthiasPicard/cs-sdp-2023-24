@@ -388,7 +388,6 @@ class HeuristicModel(BaseModel):
          
         for c,j in zip(clusters,range(self.P)):       
             self.model.addConstr(self.sum_utilite[0,c,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,c, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]>=self.epsilon)
-            # self.model.addConstr(self.sum_utilite[0,c,j] - self.sigma_plus_x[j] + self.sigma_moins_x[j] - self.sum_utilite[1,c, j] + self.sigma_plus_y[j] - self.sigma_moins_y[j]<= - self.epsilon ) # Infeasible with this constraint
 
         for k in range(self.K):
             for i in range(self.n):
